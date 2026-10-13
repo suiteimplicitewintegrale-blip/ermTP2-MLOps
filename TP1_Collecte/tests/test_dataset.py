@@ -14,7 +14,7 @@ REC_TEMPLATE = {
     "date": "2025-04-25",
     "text": "you are an idiot",
     "media": "",
-    "url": "https://boards.4chan.org/g/thread/1#p1",
+    "url": "",
     "source": "4chan",
     "metadata": json.dumps({"board": "g"}),
 }
@@ -23,6 +23,9 @@ REC_TEMPLATE = {
 def rec(**kw):
     out = dict(REC_TEMPLATE)
     out.update(kw)
+    if not out["url"]:
+        # every message has its own permalink unless the test says otherwise
+        out["url"] = f"https://boards.4chan.org/g/thread/1#p{out['id']}"
     return out
 
 
@@ -72,7 +75,10 @@ class TestDedupe:
     def test_removes_duplicate_urls(self):
         df = dataset.dedupe(
             dataset.records_to_frame(
-                [rec(id="a", text="hello there"), rec(id="b", text="different text but same url")]
+                [
+                    rec(id="a", text="hello there everyone", url="https://x.example/1"),
+                    rec(id="b", text="a completely different text", url="https://x.example/1"),
+                ]
             )
         )
         assert len(df) == 1
@@ -91,6 +97,16 @@ class TestDedupe:
     def test_drops_empty_and_whitespace_rows(self, raw_records):
         df = dataset.dedupe(dataset.records_to_frame(raw_records))
         assert not df["text"].str.strip().eq("").any()
+
+    def test_keeps_rows_without_permalink(self):
+        # a source without permalinks must not vanish from the corpus
+        df = dataset.dedupe(
+            dataset.records_to_frame(
+                [rec(id="a", text="a message without permalink", url=""),
+                 rec(id="b", text="another message, no permalink", url="")]
+            )
+        )
+        assert len(df) == 2
 
     def test_drops_too_short_rows(self):
         df = dataset.dedupe(dataset.records_to_frame([rec(id="a", text="ok"), rec(id="b", text="real sentence here")]))

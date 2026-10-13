@@ -1,8 +1,10 @@
 """Collection from the public Stack Exchange API (no key, 300 requests/day).
 
-Two calls per query: the default filter gives the comment permalink and date,
-``filter=withbody`` gives the HTML body. Comments carry no image, so the
-``media`` column stays empty for this source.
+Why questions and answers rather than comments? The ``q`` parameter of
+``/comments`` matches the *parent post*, so the returned comments rarely contain
+the keyword themselves. ``/search/advanced`` really does search the post body,
+so the collected messages carry the vocabulary we are after. Each question and
+its answers are kept as separate messages.
 """
 
 from __future__ import annotations
@@ -17,8 +19,20 @@ from .. import config
 from ..textclean import html_to_text, is_relevant, make_id
 
 API_ROOT = "https://api.stackexchange.com/2.3"
-COMMENTS_URL = f"{API_ROOT}/comments"
-COMMENTS_BY_ID_URL = f"{API_ROOT}/comments/{{ids}}"
+SEARCH_URL = f"{API_ROOT}/search/advanced"
+ANSWERS_URL = f"{API_ROOT}/questions/{{ids}}/answers"
+STACKOVERFLOW_HOST = "https://stackoverflow.com"
+
+
+def site_host(site: str) -> str:
+    """Stack Overflow has its own domain, the others follow ``<slug>.stackexchange.com``."""
+    return STACKOVERFLOW_HOST if site == "stackoverflow" else f"https://{site}.stackexchange.com"
+
+
+def post_permalink(site: str, question_id: int, answer_id: int | None = None) -> str:
+    """Public permalink of a question or of one of its answers."""
+    base = f"{site_host(site)}/q/{question_id}"
+    return base if answer_id is None else f"{base}#{answer_id}"
 
 
 def batched(items, size: int):
@@ -39,43 +53,70 @@ def _iso_date(epoch_seconds: float | int | None) -> str:
     return datetime.fromtimestamp(int(epoch_seconds), tz=timezone.utc).strftime("%Y-%m-%d")
 
 
-def merge_bodies(items: list[dict], bodies: list[dict]) -> list[dict]:
-    """Attach HTML bodies to the comments they belong to.
-
-    Comments deleted between the two calls simply disappear.
-    """
-    by_id = {b.get("comment_id"): b.get("body", "") for b in bodies}
-    return [dict(item, body=by_id[item["comment_id"]]) for item in items
-            if item.get("comment_id") in by_id]
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0] + " […]"
 
 
-def parse_comment(site: str, item: dict, body_item: dict) -> dict | None:
-    """Map one Stack Exchange comment to a corpus record (``None`` if empty)."""
-    text = html_to_text(body_item.get("body", "")).strip()
-    if not text:
+def parse_question(site: str, item: dict) -> dict | None:
+    """Map one Stack Exchange question to a corpus record."""
+    body = html_to_text(item.get("body", ""))
+    title = html_to_text(item.get("title", ""))
+    text = f"{title}. {body}".strip(". ") if title else body
+    text = _truncate(text.strip(), config.MAX_TEXT_CHARS)
+    if len(text) < config.MIN_TEXT_CHARS:
         return None
 
-    comment_id = item.get("comment_id")
+    question_id = item.get("question_id")
     metadata = {
         "site": site,
-        "post_id": item.get("post_id"),
+        "kind": "question",
         "score": item.get("score", 0),
-        "edited": bool(item.get("edited", False)),
+        "nb_answers": item.get("answer_count", 0),
+        "tags": item.get("tags", []),
         "has_image": False,
     }
     return {
-        "id": make_id("stackexchange", f"{site}-{comment_id}"),
+        "id": make_id("stackexchange", f"{site}-q{question_id}"),
         "date": _iso_date(item.get("creation_date")),
         "text": text,
         "media": "",
-        "url": item.get("link", ""),
+        "url": item.get("link") or post_permalink(site, question_id),
+        "source": "stackexchange",
+        "metadata": json.dumps(metadata, ensure_ascii=False),
+    }
+
+
+def parse_answer(site: str, item: dict) -> dict | None:
+    """Map one Stack Exchange answer to a corpus record."""
+    text = _truncate(html_to_text(item.get("body", "")).strip(), config.MAX_TEXT_CHARS)
+    if len(text) < config.MIN_TEXT_CHARS:
+        return None
+
+    answer_id = item.get("answer_id")
+    question_id = item.get("question_id")
+    metadata = {
+        "site": site,
+        "kind": "answer",
+        "score": item.get("score", 0),
+        "question_id": question_id,
+        "is_accepted": bool(item.get("is_accepted", False)),
+        "has_image": False,
+    }
+    return {
+        "id": make_id("stackexchange", f"{site}-a{answer_id}"),
+        "date": _iso_date(item.get("creation_date")),
+        "text": text,
+        "media": "",
+        "url": post_permalink(site, question_id, answer_id),
         "source": "stackexchange",
         "metadata": json.dumps(metadata, ensure_ascii=False),
     }
 
 
 class StackExchangeCollector:
-    """Searches comments matching the collection keywords on a few sites."""
+    """Searches questions matching the collection keywords, then their answers."""
 
     def __init__(self, session: requests.Session | None = None, sleep=time.sleep,
                  keywords_only: bool = True):
@@ -95,52 +136,67 @@ class StackExchangeCollector:
             self.sleep(float(payload["backoff"]))
         return payload
 
-    def search_comments(self, site: str, query: str, pagesize: int) -> list[dict]:
+    def search_questions(self, site: str, query: str,
+                         pagesize: int | None = None) -> list[dict]:
+        pagesize = pagesize or config.STACKEXCHANGE_PAGESIZE
         payload = self._get(
-            COMMENTS_URL,
+            SEARCH_URL,
             {"site": site, "q": query, "pagesize": pagesize, "order": "desc",
-             "sort": "creation", "filter": "default"},
+             "sort": "votes", "filter": "withbody"},
         )
         return payload.get("items", [])
 
-    def fetch_bodies(self, site: str, comment_ids: list[int]) -> list[dict]:
-        bodies: list[dict] = []
-        for chunk in batched(comment_ids, 100):
+    def fetch_answers(self, site: str, question_ids: list[int]) -> list[dict]:
+        answers: list[dict] = []
+        for chunk in batched(question_ids, 100):
             self.sleep(config.REQUEST_PAUSE_S)
             payload = self._get(
-                COMMENTS_BY_ID_URL.format(ids=";".join(str(i) for i in chunk)),
-                {"site": site, "filter": "withbody"},
+                ANSWERS_URL.format(ids=";".join(str(i) for i in chunk)),
+                {"site": site, "filter": "withbody",
+                 "pagesize": config.STACKEXCHANGE_PAGESIZE, "sort": "votes",
+                 "order": "desc"},
             )
-            bodies.extend(payload.get("items", []))
-        return bodies
+            answers.extend(payload.get("items", []))
+        return answers
 
     def collect_site(self, site: str, queries: list[str],
-                     pagesize: int | None = None) -> list[dict]:
-        pagesize = pagesize or config.STACKEXCHANGE_PAGESIZE
-        items: list[dict] = []
+                     collect_answers: bool | None = None) -> list[dict]:
+        if collect_answers is None:
+            collect_answers = config.STACKEXCHANGE_COLLECT_ANSWERS
+        questions: list[dict] = []
         seen: set[int] = set()
         for query in queries:
             self.sleep(config.REQUEST_PAUSE_S)
-            for item in self.search_comments(site, query, pagesize):
-                if item.get("comment_id") not in seen:
-                    seen.add(item["comment_id"])
-                    items.append(item)
-
-        if not items:
+            for item in self.search_questions(site, query):
+                if item.get("question_id") not in seen:
+                    seen.add(item["question_id"])
+                    questions.append(item)
+        if not questions:
             return []
-        bodies = self.fetch_bodies(site, [i["comment_id"] for i in items])
-        records = []
-        for item, body in zip(merge_bodies(items, bodies), merge_bodies(items, bodies)):
-            pass  # placeholder replaced below
-        records = []
-        for merged in merge_bodies(items, bodies):
-            record = parse_comment(site, merged, merged)
-            if record is None:
-                continue
-            if self.keywords_only and not is_relevant(record["text"]):
-                continue
-            records.append(record)
-        return records
+
+        # Half the budget goes to questions, half to their answers: capping only
+        # at the end would fill the whole quota with questions and silently drop
+        # every answer.
+        budget = config.STACKEXCHANGE_MAX_PER_SITE
+        if collect_answers:
+            questions = questions[: max(1, budget // 2)]
+
+        records: list[dict] = []
+        for question in questions:
+            record = parse_question(site, question)
+            if record is not None:
+                records.append(record)
+
+        if collect_answers:
+            answers = self.fetch_answers(site, [q["question_id"] for q in questions])
+            for answer in answers:
+                record = parse_answer(site, answer)
+                if record is not None:
+                    records.append(record)
+
+        if self.keywords_only:
+            records = [r for r in records if is_relevant(r["text"])]
+        return records[:budget]
 
     def collect(self, sites: list[str] | None = None,
                 queries: list[str] | None = None) -> list[dict]:

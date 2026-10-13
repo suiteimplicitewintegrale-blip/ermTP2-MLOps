@@ -31,21 +31,22 @@ SOURCES = ["4chan", "stackexchange"]
 KEYWORDS_BY_CLASS: dict[str, list[str]] = {
     "insulte": [
         "idiot", "stupid", "moron", "loser", "ugly", "dumb", "brainlet",
-        "worthless", "pathetic", "trash", "garbage", "useless",
+        "smoothbrain", "worthless", "pathetic", "trash", "garbage", "useless",
+        "clown", "noob", "fool", "shill",
     ],
     "menace": [
         "kill yourself", "kys", "you should die", "i will kill you",
-        "death threat", "you deserve to die",
+        "death threat", "you deserve to die", "get cancer",
     ],
     "haine": [
         "you people are", "all of you are", "subhuman", "go back to your country",
-        "worthless group", "inferior race",
+        "worthless group", "inferior race", "you dont belong here",
     ],
     "provocation": [
-        "cope", "seethe", "cry about it", "stay mad", "lmao get rekt", "ratio",
-        "skill issue", "git gud",
+        "cope", "seethe", "cry about it", "stay mad", "get rekt", "ratio",
+        "skill issue", "git gud", "lmao", "cringe", "touch grass",
     ],
-    "neutre": ["thanks", "anyone know", "how do i", "help please"],
+    "neutre": ["thanks", "anyone know", "how do i", "help please", "question about"],
 }
 
 KEYWORDS: list[str] = [kw for kws in KEYWORDS_BY_CLASS.values() for kw in kws]
@@ -54,14 +55,31 @@ KEYWORDS: list[str] = [kw for kws in KEYWORDS_BY_CLASS.values() for kw in kws]
 # 4chan archive (public, read-only JSON API, robots.txt respected)
 # --------------------------------------------------------------------------- #
 FOURCHAN_BOARDS = ["g", "v"]
-FOURCHAN_THREADS_PER_BOARD = 6
+FOURCHAN_THREADS_PER_BOARD = 12
 FOURCHAN_MAX_POSTS_PER_THREAD = 40
+# Boards g and v are work-safe boards: no adult content, chosen on purpose.
+FOURCHAN_KEEP_IMAGE_POSTS = True
+FOURCHAN_MIN_IMAGE_POST_CHARS = 20
+FOURCHAN_MAX_IMAGE_POSTS_PER_THREAD = 3
 
 # --------------------------------------------------------------------------- #
 # Stack Exchange (public API, no key; 300 requests/day quota)
 # --------------------------------------------------------------------------- #
 STACKEXCHANGE_SITES = ["stackoverflow", "gaming"]
 STACKEXCHANGE_PAGESIZE = 100
+# Kept small on purpose: the API allows 300 requests/day without a key.
+STACKEXCHANGE_QUERIES = [
+    "idiot", "stupid", "bully", "hate", "kill yourself", "cope",
+]
+STACKEXCHANGE_MAX_PER_SITE = 150
+STACKEXCHANGE_COLLECT_ANSWERS = True
+
+# --------------------------------------------------------------------------- #
+# Text bounds
+# --------------------------------------------------------------------------- #
+MIN_TEXT_CHARS = 8
+# Long forum answers are cut so one message cannot dominate the corpus.
+MAX_TEXT_CHARS = 1500
 
 # --------------------------------------------------------------------------- #
 # Images
@@ -81,4 +99,5 @@ REQUEST_PAUSE_S = 1.0  # politeness delay between requests to the same host
 # MLflow
 # --------------------------------------------------------------------------- #
 MLFLOW_EXPERIMENT = "cyberbullying_Data_Collection"
-MLFLOW_TRACKING_URI = (ROOT / "mlruns").as_uri()
+# SQLite backend: the file store is in maintenance mode in MLflow 3.x.
+MLFLOW_TRACKING_URI = f"sqlite:///{(ROOT / 'mlflow.db').as_posix()}"

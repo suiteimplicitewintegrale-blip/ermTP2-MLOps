@@ -66,7 +66,8 @@ class TestDownloadImages:
     def test_respects_max_images(self, tmp_path, frame):
         out, report = images.download_images(frame, tmp_path, max_images=1, fetch=lambda url: PNG_BYTES)
         assert report["downloaded"] == 1
-        assert (out["media"] != "").sum() == 1
+        local = out["media"].str.startswith("images/").sum()
+        assert local == 1
 
     def test_leaves_undownloaded_media_untouched(self, tmp_path, frame):
         out, _ = images.download_images(frame, tmp_path, max_images=1, fetch=lambda url: PNG_BYTES)
@@ -80,7 +81,8 @@ class TestDownloadImages:
         out, report = images.download_images(frame, tmp_path, fetch=boom)
         assert report["failed"] == 2
         assert report["downloaded"] == 0
-        assert (out["media"] == "").sum() == 2
+        # the two failed rows are emptied, the two source rows had no image at all
+        assert (out["media"] == "").sum() == 4
 
     def test_rejects_oversized_payload(self, tmp_path, frame):
         big = b"0" * (images.MAX_IMAGE_BYTES + 1)
@@ -99,6 +101,29 @@ class TestDownloadImages:
             frame, tmp_path, fetch=lambda url: PNG_BYTES, sleep=sleeps.append
         )
         assert len(sleeps) == 1  # 2 downloads -> 1 pause between them
+
+    def test_politeness_delay_survives_failures(self, tmp_path, frame):
+        def boom(url):
+            raise OSError("429 too many requests")
+
+        sleeps = []
+        images.download_images(frame, tmp_path, fetch=boom, sleep=sleeps.append)
+        # both requests are spaced even though nothing succeeded
+        assert len(sleeps) == 1
+
+    def test_oversized_error_from_streaming_fetcher_is_counted(self, tmp_path, frame):
+        def too_large(url):
+            raise images.ImageTooLargeError(url)
+
+        _, report = images.download_images(frame, tmp_path, fetch=too_large)
+        assert report["skipped_too_big"] == 2
+        assert report["failed"] == 0
+
+    def test_downloaded_files_are_not_re_fetched(self, tmp_path, frame):
+        images.download_images(frame, tmp_path, fetch=lambda url: PNG_BYTES)
+        _, report = images.download_images(frame, tmp_path, fetch=lambda url: b"")
+        assert report["already_present"] == 2
+        assert report["failed"] == 0
 
     def test_returns_new_frame(self, tmp_path, frame):
         out, _ = images.download_images(frame, tmp_path, fetch=lambda url: PNG_BYTES)

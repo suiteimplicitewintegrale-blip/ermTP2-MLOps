@@ -77,16 +77,58 @@ def parse_thread(board: str, payload: dict) -> list[dict]:
     return records
 
 
+def is_image_post(record: dict, min_chars: int) -> bool:
+    """True for a post that brings an image *and* enough text to be usable."""
+    return bool(record.get("media")) and len(record.get("text", "")) >= min_chars
+
+
+def select_kept(
+    posts: list[dict],
+    keywords_only: bool = True,
+    keep_image_posts: bool = True,
+    max_image_posts: int = config.FOURCHAN_MAX_IMAGE_POSTS_PER_THREAD,
+    min_image_chars: int = config.FOURCHAN_MIN_IMAGE_POST_CHARS,
+    max_posts: int = config.FOURCHAN_MAX_POSTS_PER_THREAD,
+) -> list[dict]:
+    """Keep keyword posts plus a few image posts per thread, in reading order.
+
+    Keyword matches are the backbone of the corpus; a capped number of image
+    posts is added so the multimodal part has material without drowning the
+    corpus in off-topic chatter.
+    """
+    if not keywords_only:
+        return posts[:max_posts]
+
+    kept: list[dict] = []
+    image_posts = 0
+    for post in posts:
+        if is_relevant(post["text"]):
+            kept.append(post)
+        elif keep_image_posts and image_posts < max_image_posts and is_image_post(post, min_image_chars):
+            kept.append(post)
+            image_posts += 1
+        if len(kept) >= max_posts:
+            break
+    return kept
+
+
 class FourChanCollector:
-    """Fetches threads from a board catalog and keeps keyword-matching posts."""
+    """Fetches threads from a board catalog and keeps keyword-matching posts.
+
+    Image posts with a real text body are kept in limited number even without a
+    keyword: they are what feeds the multimodal part of the corpus. Boards ``g``
+    and ``v`` are work-safe boards, which is why they were chosen.
+    """
 
     def __init__(self, session: requests.Session | None = None, sleep=time.sleep,
-                 keywords_only: bool = True):
+                 keywords_only: bool = True, keep_image_posts: bool | None = None):
         self.session = session or requests.Session()
         self.session.headers.update({"User-Agent": config.USER_AGENT})
         self.sleep = sleep
         self.keywords_only = keywords_only
-        self.stats: dict[str, int] = {}
+        self.keep_image_posts = (
+            config.FOURCHAN_KEEP_IMAGE_POSTS if keep_image_posts is None else keep_image_posts
+        )
 
     def _get_json(self, url: str) -> dict:
         response = self.session.get(url, timeout=config.REQUEST_TIMEOUT_S)
@@ -110,9 +152,12 @@ class FourChanCollector:
             self.sleep(config.REQUEST_PAUSE_S)
             payload = self._get_json(THREAD_URL.format(board=board, no=thread_no))
             posts = parse_thread(board, payload)
-            kept = [r for r in posts if not self.keywords_only or is_relevant(r["text"])]
-            records.extend(kept[: config.FOURCHAN_MAX_POSTS_PER_THREAD])
-        self.stats[board] = len(records)
+            kept = select_kept(
+                posts,
+                keywords_only=self.keywords_only,
+                keep_image_posts=self.keep_image_posts,
+            )
+            records.extend(kept)
         return records
 
     def collect(self, boards: list[str] | None = None) -> list[dict]:

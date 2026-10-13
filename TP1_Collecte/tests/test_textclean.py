@@ -51,6 +51,16 @@ class TestCleanText:
     def test_removes_www_urls(self):
         assert "www" not in clean_text("see www.foo.org ok")
 
+    def test_removes_escaped_urls_from_code_snippets(self):
+        # JSON pasted in a Stack Exchange answer escapes the slashes
+        out = clean_text(r'{"link":"http:\/\/example.com\/a"}')
+        assert "http" not in out
+        assert "example.com" not in out
+
+    def test_keeps_identifiers_that_merely_contain_http(self):
+        # "http.postBuffer" is a code identifier, not a URL
+        assert clean_text("set http.postBuffer to 524288000") == "set http.postbuffer to 524288000"
+
     def test_removes_mentions(self):
         # @mentions are usernames -> PII, dropped entirely
         assert clean_text("hey @SomeUser stop it") == "hey stop it"
@@ -78,6 +88,9 @@ class TestCleanText:
 
     def test_keeps_legit_double_letters(self):
         assert clean_text("class assignment") == "class assignment"
+
+    def test_does_not_collapse_digits(self):
+        assert clean_text("retry 1000000 times") == "retry 1000000 times"
 
     def test_is_idempotent(self):
         once = clean_text("HEY @bob visit https://x.io/y !!! soooo dumb")
@@ -135,7 +148,7 @@ class TestMatchedKeywords:
 
     def test_respects_word_boundary(self):
         # "idiot" must not match inside another word
-        assert matched_keywords("idiotic behavior") == [kw for kw in ["idiot"] if False]
+        assert matched_keywords("idiotic behavior") == []
 
     def test_case_insensitive(self):
         assert "loser" in matched_keywords("LOSER")

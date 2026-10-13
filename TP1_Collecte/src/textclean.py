@@ -49,10 +49,11 @@ _PUNCT_MAP = {
     "–": "-", "—": "-", "−": "-",
     "…": "...", "«": '"', "»": '"',
 }
-_URL_RE = re.compile(r"(?i)\bhttps?://\S+|\bwww\.\S+")
+_URL_RE = re.compile(r"(?i)\bhttps?://\S+|\bwww\.\S+|https?:(?:\\?/){2}\S*")
 _MENTION_RE = re.compile(r"@[\w.\-]+")
 _HASHTAG_RE = re.compile(r"#(\w+)")
-_REPEAT_RE = re.compile(r"(.)\1{2,}", re.DOTALL)
+_REPEAT_LETTERS_RE = re.compile(r"([^\W\d_])\1{2,}")
+_REPEAT_PUNCT_RE = re.compile(r"([^\w\s])\1{2,}")
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
@@ -60,9 +61,11 @@ def clean_text(raw: str | None) -> str:
     """Normalise one message for the cleaned corpus.
 
     Removes URLs, ``@`` mentions (usernames are PII) and ``#`` symbols, lowers
-    the case, normalises unicode and collapses exaggerated character repeats and
-    whitespace. Emojis are kept on purpose: they carry affect signal that is
-    useful for cyberbullying detection.
+    the case, normalises unicode and collapses exaggerated letter and
+    punctuation repeats ("sooooo" -> "soo", "!!!!" -> "!!") and whitespace.
+    Digits are left alone: collapsing them would corrupt figures. Emojis are
+    kept on purpose: they carry affect signal that is useful for cyberbullying
+    detection.
     """
     if raw is None:
         return ""
@@ -74,7 +77,8 @@ def clean_text(raw: str | None) -> str:
     text = _URL_RE.sub(" ", text)
     text = _MENTION_RE.sub(" ", text)
     text = _HASHTAG_RE.sub(r"\1", text)
-    text = _REPEAT_RE.sub(r"\1\1", text)
+    text = _REPEAT_LETTERS_RE.sub(r"\1\1", text)
+    text = _REPEAT_PUNCT_RE.sub(r"\1\1", text)
     text = text.lower()
     return _WHITESPACE_RE.sub(" ", text).strip()
 

@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# MLOps
+mlruns/
+mlflow.db
+.dvc/tmp/
+.dvc/cache/
+dvc.lock

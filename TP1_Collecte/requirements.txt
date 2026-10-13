@@ -1,0 +1,11 @@
+# TP1_Collecte — dépendances (Python 3.14 testé)
+pandas>=3.0
+requests>=2.32
+beautifulsoup4>=4.12
+lxml>=5.3
+mlflow>=3.17
+dvc>=3.67
+pytest>=8.3
+nbformat>=5.10
+ipykernel>=6.29
+matplotlib>=3.9
